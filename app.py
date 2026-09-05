@@ -22,8 +22,21 @@ def get_transcript():
         return jsonify({'success': False, 'error': 'Invalid YouTube URL'}), 400
 
     try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US', 'auto'])
-        full_text = " ".join([item['text'] for item in transcript])
+        # Step 1: Video ke saare transcript tracks list karein
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+
+        # Step 2: Auto-generated ya manually created track fetch karein
+        try:
+            transcript = transcript_list.find_transcript(['en', 'en-US', 'auto'])
+        except Exception:
+            # Agar English nahi milti toh jo bhi pehla generated/manual track mile use utha lein
+            transcript = transcript_list.find_generated_transcript(['en']) if transcript_list else None
+            if not transcript:
+                first_track = next(iter(transcript_list))
+                transcript = first_track
+
+        data = transcript.fetch()
+        full_text = " ".join([item['text'] for item in data])
         clean_text = full_text.replace('\n', ' ')
 
         return jsonify({
@@ -32,7 +45,7 @@ def get_transcript():
         }), 200
 
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': f"Captions unavailable for this video. Details: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
