@@ -1,12 +1,22 @@
 const express = require('express');
 const cors = require('cors');
-const { YoutubeTranscript } = require('youtube-transcript');
+const { Innertube, UniversalCache } = require('youtubei.js');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Helper: Extract Video ID from any YouTube URL format
+let youtube;
+
+// Initialize Innertube Client
+(async () => {
+    youtube = await Innertube.create({
+        cache: new UniversalCache(false),
+        generate_session_locally: true
+    });
+    console.log('[Innertube] Client initialized successfully.');
+})();
+
 function extractVideoID(url) {
     const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
     const match = url.match(regExp);
@@ -16,65 +26,54 @@ function extractVideoID(url) {
 app.get('/api/transcript', async (req, res) => {
     try {
         const rawUrl = req.query.url;
-
         if (!rawUrl) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Missing URL parameter.' 
-            });
+            return res.status(400).json({ success: false, error: 'Missing URL parameter.' });
         }
 
         const videoId = extractVideoID(rawUrl);
         if (!videoId) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Invalid YouTube URL or Video ID.' 
-            });
+            return res.status(400).json({ success: false, error: 'Invalid YouTube URL or Video ID.' });
         }
 
-        let transcript = null;
-
-        // Multi-Language & Auto-Caption Fallback Array
-        // Primary attempt: Default track (whatever language video has)
-        try {
-            transcript = await YoutubeTranscript.fetchTranscript(videoId);
-        } catch (e1) {
-            // Secondary attempts for common languages & auto-generated tracks
-            const languages = ['en', 'ur', 'hi', 'es', 'fr', 'de', 'ar', 'pt', 'id'];
-            
-            for (const lang of languages) {
-                try {
-                    transcript = await YoutubeTranscript.fetchTranscript(videoId, { lang });
-                    if (transcript && transcript.length > 0) break;
-                } catch (e) {
-                    continue;
-                }
-            }
+        if (!youtube) {
+            return res.status(503).json({ success: false, error: 'YouTube client is initializing, try again in a few seconds.' });
         }
 
-        if (!transcript || transcript.length === 0) {
-            return res.status(404).json({
-                success: false,
-                error: 'No captions found or YouTube blocked server access for this auto-generated track.'
-            });
+        // Get Video Info via Innertube
+        const info = await youtube.getInfo(videoId);
+        const transcriptData = await info.getTranscript();
+
+        if (!transcriptData || !transcriptData.transcript || !transcriptData.transcript.content) {
+            return res.status(404).json({ success: false, error: 'No transcript found for this video.' });
         }
 
-        return res.status(200).json({ 
-            success: true, 
-            count: transcript.length,
-            data: transcript 
+        // Parse lines into simple array
+        const body = transcriptData.transcript.content.body;
+        const initialSegments = body.initial_segments || [];
+        
+        const parsedData = initialSegments.map(segment => {
+            return {
+                text: segment.snippet.text,
+                start: segment.start_ms,
+                duration: segment.end_ms - segment.start_ms
+            };
+        });
+
+        return res.status(200).json({
+            success: true,
+            count: parsedData.length,
+            data: parsedData
         });
 
     } catch (error) {
+        console.error('[Transcript Error]', error);
         return res.status(500).json({
             success: false,
-            error: 'Failed to fetch transcript from YouTube.',
+            error: 'Failed to fetch transcript using Innertube API.',
             details: error.message
         });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Universal Multi-Language Transcript API running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Innertube Transcript API running on port ${PORT}`));
