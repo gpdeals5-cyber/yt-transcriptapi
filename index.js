@@ -6,16 +6,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-let youtube;
+let youtubeClient = null;
 
-// Initialize Innertube Client
-(async () => {
-    youtube = await Innertube.create({
-        cache: new UniversalCache(false),
-        generate_session_locally: true
-    });
-    console.log('[Innertube] Client initialized successfully.');
-})();
+// Initialize YouTube Client safely
+async function getYouTubeClient() {
+    if (!youtubeClient) {
+        youtubeClient = await Innertube.create({
+            cache: new UniversalCache(false),
+            generate_session_locally: true
+        });
+    }
+    return youtubeClient;
+}
 
 function extractVideoID(url) {
     const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
@@ -32,30 +34,36 @@ app.get('/api/transcript', async (req, res) => {
 
         const videoId = extractVideoID(rawUrl);
         if (!videoId) {
-            return res.status(400).json({ success: false, error: 'Invalid YouTube URL or Video ID.' });
+            return res.status(400).json({ success: false, error: 'Invalid YouTube URL.' });
         }
 
-        if (!youtube) {
-            return res.status(503).json({ success: false, error: 'YouTube client is initializing, try again in a few seconds.' });
-        }
-
-        // Get Video Info via Innertube
-        const info = await youtube.getInfo(videoId);
+        const yt = await getYouTubeClient();
+        const info = await yt.getInfo(videoId);
         const transcriptData = await info.getTranscript();
 
-        if (!transcriptData || !transcriptData.transcript || !transcriptData.transcript.content) {
-            return res.status(404).json({ success: false, error: 'No transcript found for this video.' });
+        if (!transcriptData || !transcriptData.transcript) {
+            return res.status(404).json({ success: false, error: 'No transcript data available for this video.' });
         }
 
-        // Parse lines into simple array
-        const body = transcriptData.transcript.content.body;
-        const initialSegments = body.initial_segments || [];
-        
-        const parsedData = initialSegments.map(segment => {
+        // Handle different structural formats returned by Innertube
+        const content = transcriptData.transcript.content;
+        let segments = [];
+
+        if (content && content.body && content.body.initial_segments) {
+            segments = content.body.initial_segments;
+        } else if (transcriptData.segments) {
+            segments = transcriptData.segments;
+        }
+
+        if (!segments || segments.length === 0) {
+            return res.status(404).json({ success: false, error: 'Transcript segments are empty.' });
+        }
+
+        const parsedData = segments.map(segment => {
             return {
-                text: segment.snippet.text,
-                start: segment.start_ms,
-                duration: segment.end_ms - segment.start_ms
+                text: segment.snippet ? segment.snippet.text : (segment.text || ''),
+                start: segment.start_ms || 0,
+                duration: (segment.end_ms && segment.start_ms) ? (segment.end_ms - segment.start_ms) : 0
             };
         });
 
@@ -66,7 +74,7 @@ app.get('/api/transcript', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('[Transcript Error]', error);
+        console.error('[Transcript Error Details]:', error);
         return res.status(500).json({
             success: false,
             error: 'Failed to fetch transcript using Innertube API.',
@@ -75,5 +83,7 @@ app.get('/api/transcript', async (req, res) => {
     }
 });
 
+app.get('/', (req, res) => res.send('Innertube Transcript API is Live.'));
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Innertube Transcript API running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
