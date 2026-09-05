@@ -24,40 +24,43 @@ app.get('/api/transcript', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Invalid YouTube URL.' });
         }
 
-        // Fetch YouTube Video Page HTML
-        const videoPageResponse = await axios.get(`https://www.youtube.com/watch?v=${videoId}`, {
+        // 1. Direct InnerTube Player API Call (Bypasses IP Blocks)
+        const playerResponse = await axios.post('https://www.youtube.com/youtubei/v1/player', {
+            videoId: videoId,
+            context: {
+                client: {
+                    clientName: 'WEB',
+                    clientVersion: '2.20240301.00.00',
+                    hl: 'en',
+                    gl: 'US'
+                }
+            }
+        }, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9'
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
             }
         });
 
-        const html = videoPageResponse.data;
+        const captions = playerResponse.data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
-        // Extract Captions JSON Track Object
-        const splitHtml = html.split('"captionTracks":');
-        if (splitHtml.length < 2) {
-            return res.status(404).json({ success: false, error: 'No captions or auto-generated tracks found for this video.' });
+        if (!captions || captions.length === 0) {
+            return res.status(404).json({ success: false, error: 'No captions found for this video.' });
         }
 
-        const captionTracksJson = JSON.parse(splitHtml[1].split('],"')[0] + ']');
-        if (!captionTracksJson || captionTracksJson.length === 0) {
-            return res.status(404).json({ success: false, error: 'Caption tracks array is empty.' });
-        }
-
-        // Select English/Default Track URL
-        let track = captionTracksJson.find(t => t.languageCode === 'en') || captionTracksJson[0];
+        // 2. Select English/Auto-Generated or First Track
+        let track = captions.find(c => c.languageCode === 'en') || captions[0];
         let transcriptUrl = track.baseUrl;
 
         if (!transcriptUrl) {
-            return res.status(404).json({ success: false, error: 'Timed text URL not found.' });
+            return res.status(404).json({ success: false, error: 'Transcript URL unavailable.' });
         }
 
-        // Fetch XML Captions Data
-        const transcriptXmlResponse = await axios.get(transcriptUrl);
-        const xmlData = transcriptXmlResponse.data;
+        // 3. Fetch XML Subtitles Data
+        const xmlResponse = await axios.get(transcriptUrl);
+        const xmlData = xmlResponse.data;
 
-        // Parse XML Text
+        // 4. Parse XML Text
         const textMatches = [...xmlData.matchAll(/<text[^>]*>(.*?)<\/text>/g)];
         const parsedData = textMatches.map(m => {
             let cleanText = m[1]
@@ -82,16 +85,16 @@ app.get('/api/transcript', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Transcript Fetch Error:', error.message);
+        console.error('API Error:', error.message);
         return res.status(500).json({
             success: false,
-            error: 'Failed to extract transcript track.',
+            error: 'Failed to fetch transcript.',
             details: error.message
         });
     }
 });
 
-app.get('/', (req, res) => res.send('Direct YouTube Subtitle Extractor API is Live.'));
+app.get('/', (req, res) => res.send('YouTube InnerTube Transcript API active.'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server active on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
