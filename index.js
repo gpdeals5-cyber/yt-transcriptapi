@@ -1,23 +1,10 @@
 const express = require('express');
 const cors = require('cors');
-const { Innertube, UniversalCache } = require('youtubei.js');
+const axios = require('axios');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-let youtubeClient = null;
-
-// Initialize YouTube Client safely
-async function getYouTubeClient() {
-    if (!youtubeClient) {
-        youtubeClient = await Innertube.create({
-            cache: new UniversalCache(false),
-            generate_session_locally: true
-        });
-    }
-    return youtubeClient;
-}
 
 function extractVideoID(url) {
     const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
@@ -37,35 +24,56 @@ app.get('/api/transcript', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Invalid YouTube URL.' });
         }
 
-        const yt = await getYouTubeClient();
-        const info = await yt.getInfo(videoId);
-        const transcriptData = await info.getTranscript();
-
-        if (!transcriptData || !transcriptData.transcript) {
-            return res.status(404).json({ success: false, error: 'No transcript data available for this video.' });
-        }
-
-        // Handle different structural formats returned by Innertube
-        const content = transcriptData.transcript.content;
-        let segments = [];
-
-        if (content && content.body && content.body.initial_segments) {
-            segments = content.body.initial_segments;
-        } else if (transcriptData.segments) {
-            segments = transcriptData.segments;
-        }
-
-        if (!segments || segments.length === 0) {
-            return res.status(404).json({ success: false, error: 'Transcript segments are empty.' });
-        }
-
-        const parsedData = segments.map(segment => {
-            return {
-                text: segment.snippet ? segment.snippet.text : (segment.text || ''),
-                start: segment.start_ms || 0,
-                duration: (segment.end_ms && segment.start_ms) ? (segment.end_ms - segment.start_ms) : 0
-            };
+        // Fetch YouTube Video Page HTML
+        const videoPageResponse = await axios.get(`https://www.youtube.com/watch?v=${videoId}`, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9'
+            }
         });
+
+        const html = videoPageResponse.data;
+
+        // Extract Captions JSON Track Object
+        const splitHtml = html.split('"captionTracks":');
+        if (splitHtml.length < 2) {
+            return res.status(404).json({ success: false, error: 'No captions or auto-generated tracks found for this video.' });
+        }
+
+        const captionTracksJson = JSON.parse(splitHtml[1].split('],"')[0] + ']');
+        if (!captionTracksJson || captionTracksJson.length === 0) {
+            return res.status(404).json({ success: false, error: 'Caption tracks array is empty.' });
+        }
+
+        // Select English/Default Track URL
+        let track = captionTracksJson.find(t => t.languageCode === 'en') || captionTracksJson[0];
+        let transcriptUrl = track.baseUrl;
+
+        if (!transcriptUrl) {
+            return res.status(404).json({ success: false, error: 'Timed text URL not found.' });
+        }
+
+        // Fetch XML Captions Data
+        const transcriptXmlResponse = await axios.get(transcriptUrl);
+        const xmlData = transcriptXmlResponse.data;
+
+        // Parse XML Text
+        const textMatches = [...xmlData.matchAll(/<text[^>]*>(.*?)<\/text>/g)];
+        const parsedData = textMatches.map(m => {
+            let cleanText = m[1]
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'")
+                .replace(/&#10;/g, ' ')
+                .replace(/\n/g, ' ');
+            return { text: cleanText };
+        });
+
+        if (parsedData.length === 0) {
+            return res.status(404).json({ success: false, error: 'Failed to parse text from transcript track.' });
+        }
 
         return res.status(200).json({
             success: true,
@@ -74,16 +82,16 @@ app.get('/api/transcript', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('[Transcript Error Details]:', error);
+        console.error('Transcript Fetch Error:', error.message);
         return res.status(500).json({
             success: false,
-            error: 'Failed to fetch transcript using Innertube API.',
+            error: 'Failed to extract transcript track.',
             details: error.message
         });
     }
 });
 
-app.get('/', (req, res) => res.send('Innertube Transcript API is Live.'));
+app.get('/', (req, res) => res.send('Direct YouTube Subtitle Extractor API is Live.'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server active on port ${PORT}`));
